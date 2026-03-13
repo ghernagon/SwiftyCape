@@ -12,7 +12,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 20) {
             // Title
-            Text("Capeify UI")
+            Text("SwiftyCape")
                 .font(.system(size: 28, weight: .bold))
                 .padding(.top, 20)
             

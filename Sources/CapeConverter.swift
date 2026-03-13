@@ -4,7 +4,8 @@ enum CapeConverterError: LocalizedError {
     case emptyInputFolder
     case emptyInfFile
     case emptyOutputPath
-    case executionFailed(String)
+    case conversionFailed(String)
+    case executableNotFound
     
     var errorDescription: String? {
         switch self {
@@ -14,13 +15,25 @@ enum CapeConverterError: LocalizedError {
             return "Please select an INF file"
         case .emptyOutputPath:
             return "Please select an output path"
-        case .executionFailed(let message):
-            return "Conversion failed: \(message)"
+        case .conversionFailed(let message):
+            return message
+        case .executableNotFound:
+            return "Capeify executable not found. Please reinstall the app."
         }
     }
 }
 
 struct CapeConverter {
+    // Path to the bundled executable
+    private static let executablePath: String = {
+        // First try to find in the app bundle's MacOS folder
+        if let bundlePath = Bundle.main.path(forAuxiliaryExecutable: "CapeifyCLI") {
+            return bundlePath
+        }
+        // Fallback to a known location during development
+        return "~/Developer/cursors/capeify/dist/CapeifyCLI"
+    }()
+    
     static func convert(
         inputFolder: String,
         infFile: String,
@@ -31,61 +44,75 @@ struct CapeConverter {
         guard !infFile.isEmpty else { return .failure(.emptyInfFile) }
         guard !outputPath.isEmpty else { return .failure(.emptyOutputPath) }
         
-        // Get the Python path from pyenv
-        let pythonPath = NSHomeDirectory() + "/.pyenv/versions/cursors_env/bin/python"
+        // Check if executable exists
+        guard FileManager.default.fileExists(atPath: executablePath) else {
+            return .failure(.executableNotFound)
+        }
         
-        // Get the Capeify module path
-        let capeifyPath = NSHomeDirectory() + "/Developer/cursors/capeify"
-        
-        // Build the command - execute Python directly, no shell needed
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pythonPath)
-        process.currentDirectoryURL = URL(fileURLWithPath: capeifyPath)
-        
-        // Set environment variables for ImageMagick
-        var environment = ProcessInfo.processInfo.environment
-        environment["MAGICK_HOME"] = "/opt/homebrew/opt/imagemagick"
-        environment["PATH"] = "/opt/homebrew/opt/imagemagick/bin:" + (environment["PATH"] ?? "")
-        environment["DYLD_LIBRARY_PATH"] = "/opt/homebrew/opt/imagemagick/lib:" + (environment["DYLD_LIBRARY_PATH"] ?? "")
-        process.environment = environment
-        
-        // Python module arguments
-        process.arguments = [
-            "-m", "Capeify.main", "convert",
-            "--path", inputFolder,
-            "--inf-file", infFile,
-            "--out", outputPath
-        ]
-        
-        // Create pipes for output
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
+        // Check if ImageMagick is installed
+        let imagemagickCheck = Process()
+        imagemagickCheck.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/convert")
+        imagemagickCheck.arguments = ["--version"]
         
         do {
-            try process.run()
-            process.waitUntilExit()
-            
-            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            
-            let output = String(data: outputData, encoding: .utf8) ?? ""
-            let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
-            let combinedOutput = output + (errorOutput.isEmpty ? "" : "\n" + errorOutput)
-            
-            if process.terminationStatus == 0 {
-                // Always show output for success too
-                if !combinedOutput.isEmpty {
-                    return .success(combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines))
-                }
-                return .success("Conversion completed successfully!")
-            } else {
-                let errorMessage = combinedOutput.isEmpty ? "Unknown error (exit code: \(process.terminationStatus))" : combinedOutput
-                return .failure(.executionFailed(errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)))
+            try imagemagickCheck.run()
+            imagemagickCheck.waitUntilExit()
+            if imagemagickCheck.terminationStatus != 0 {
+                return .failure(.conversionFailed("ImageMagick is not installed. Please run: brew install imagemagick"))
             }
         } catch {
-            return .failure(.executionFailed(error.localizedDescription))
+            return .failure(.conversionFailed("ImageMagick is not installed. Please run: brew install imagemagick"))
+        }
+        
+        return await withCheckedContinuation { continuation in
+            let process = Process()
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            
+            // Set up environment to find ImageMagick libraries
+            var env = ProcessInfo.processInfo.environment
+            // Add ImageMagick library path
+            let imagemagickPath = "/opt/homebrew/opt/imagemagick/lib"
+            if let existingPath = env["DYLD_LIBRARY_PATH"] {
+                env["DYLD_LIBRARY_PATH"] = "\(imagemagickPath):\(existingPath)"
+            } else {
+                env["DYLD_LIBRARY_PATH"] = imagemagickPath
+            }
+            // Also add to PATH for the executable
+            if let existingPath = env["PATH"] {
+                env["PATH"] = "\(imagemagickPath):\(existingPath)"
+            }
+            process.environment = env
+            
+            process.executableURL = URL(fileURLWithPath: executablePath)
+            process.arguments = [
+                "convert",
+                "--path", inputFolder,
+                "--inf-file", infFile,
+                "--out", outputPath
+            ]
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
+            
+            do {
+                try process.run()
+                process.waitUntilExit()
+                
+                let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                
+                let output = String(data: outputData, encoding: .utf8) ?? ""
+                let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
+                
+                if process.terminationStatus == 0 {
+                    continuation.resume(returning: .success(output))
+                } else {
+                    let errorMessage = errorOutput.isEmpty ? output : errorOutput
+                    continuation.resume(returning: .failure(.conversionFailed(errorMessage)))
+                }
+            } catch {
+                continuation.resume(returning: .failure(.conversionFailed(error.localizedDescription)))
+            }
         }
     }
 }

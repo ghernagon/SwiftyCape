@@ -1,4 +1,4 @@
-name: CapeifyUI
+name: SwiftyCape
 options:
   bundleIdPrefix: com.capeify
   deploymentTarget:
@@ -11,7 +11,7 @@ settings:
     MACOSX_DEPLOYMENT_TARGET: "13.0"
 
 targets:
-  CapeifyUI:
+  SwiftyCape:
     type: application
     platform: macOS
     sources:
@@ -22,4 +22,8 @@ targets:
         INFOPLIST_FILE: Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/CapeifyUI.entitlements
         GENERATE_INFOPLIST_FILE: false
-        PRODUCT_NAME: CapeifyUI
+        PRODUCT_NAME: SwiftyCape
+    postBuildScripts:
+      - name: Copy CapeifyCLI
+        script: |
+          cp /Users/ghernagon/Developer/cursors/capeify/dist/CapeifyCLI "$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app/Contents/MacOS/"
